@@ -1208,7 +1208,7 @@ async function uploadImage(file, _path, isStep = false) {
 // User Session
 // ============================================================
 const USER_KEY = 'debbie-user';
-const ADMIN_USERS = ['yossib', 'Debbie_abi'];
+const ADMIN_USERS = ['yossib', 'Yossib', 'Debbie_abi', 'debbie_abi'];
 let currentUser = null;
 
 function isAdmin() { return currentUser?.username && ADMIN_USERS.includes(currentUser.username); }
@@ -1232,9 +1232,20 @@ let loginMode = 'existing'; // 'existing' | 'new'
 
 async function lookupUser(username) {
     try {
-        const q = query(collection(db, 'users'), where('username', '==', username), fsLimit(1));
-        const snap = await getDocs(q);
-        if (snap.empty) return null;
+        // Try exact match first
+        let snap = await getDocs(query(collection(db, 'users'), where('username', '==', username), fsLimit(1)));
+        // Fallback: try original-casing variants (Firestore queries are case-sensitive)
+        if (snap.empty && username !== username.toLowerCase()) {
+            snap = await getDocs(query(collection(db, 'users'), where('username', '==', username.toLowerCase()), fsLimit(1)));
+        }
+        if (snap.empty) {
+            // Last resort: scan all users (small collection) for case-insensitive match
+            const all = await getDocs(collection(db, 'users'));
+            const match = all.docs.find(d => d.data().username?.toLowerCase() === username.toLowerCase());
+            if (!match) return null;
+            const d = match.data();
+            return { username: d.username, firstName: d.firstName, lastName: d.lastName };
+        }
         const d = snap.docs[0].data();
         return { username: d.username, firstName: d.firstName, lastName: d.lastName };
     } catch (e) { console.error('lookupUser error:', e); return null; }
