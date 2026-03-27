@@ -1,0 +1,16 @@
+{
+  "name": "debbie-recipes",
+  "version": "1.0.0",
+  "main": "parse-recipes.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "firebase": "^12.11.0",
+    "firebase-admin": "^13.7.0"
+  }
+}
