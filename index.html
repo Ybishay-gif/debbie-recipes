@@ -1163,7 +1163,7 @@
 // ============================================================
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, getDocs, addDoc, doc, updateDoc, deleteDoc, serverTimestamp, query, where, limit as fsLimit } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
+// Firebase Storage SDK removed — images stored as base64 data URLs in Firestore
 
 const firebaseConfig = {
     apiKey: "AIzaSyAN0qib-Nn4qtrxZjUw0OuJn1kiIxOUsIw",
@@ -1176,32 +1176,32 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-const storage = getStorage(app);
 
 // ============================================================
 // Image Utilities
 // ============================================================
-async function resizeImage(file, maxWidth = 1200, quality = 0.75) {
+// Resize image and return a compact base64 data URL (stored directly in Firestore,
+// no Firebase Storage needed — avoids CORS/auth issues entirely).
+async function resizeImageToDataURL(file, maxWidth = 900, quality = 0.7) {
     return new Promise((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
             const canvas = document.createElement('canvas');
             let w = img.width, h = img.height;
-            if (w > maxWidth) { h = h * maxWidth / w; w = maxWidth; }
+            if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
             canvas.width = w; canvas.height = h;
             canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-            canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('toBlob failed')), 'image/jpeg', quality);
+            resolve(canvas.toDataURL('image/jpeg', quality));
         };
         img.onerror = reject;
         img.src = URL.createObjectURL(file);
     });
 }
 
-async function uploadImage(file, path) {
-    const resized = await resizeImage(file);
-    const imgRef = storageRef(storage, path);
-    await uploadBytes(imgRef, resized, { contentType: 'image/jpeg' });
-    return getDownloadURL(imgRef);
+// "Upload" = resize and return data URL (no network call required)
+async function uploadImage(file, _path, isStep = false) {
+    const maxWidth = isStep ? 700 : 900;
+    return resizeImageToDataURL(file, maxWidth, 0.7);
 }
 
 // ============================================================
@@ -2174,14 +2174,34 @@ async function handleImportSave() {
     $('importSaveBtn').disabled = true;
     $('importSaveBtn').textContent = '⏳ שומר...';
 
+    // Snapshot edit state before async ops (may be cleared on error)
+    const wasEditMode = editMode;
+    const wasEditDocId = editDocId;
+
+    let savedOk = false;
     try {
         let docId;
-        if (editMode && editDocId) {
+
+        // Process images synchronously (canvas, no network) before writing to Firestore
+        let mainImageUrl = null;
+        if (mainImageFile) {
+            mainImageUrl = await uploadImage(mainImageFile, null, false);
+        }
+        const stepImageUrls = wasEditMode ? { ...(activeRecipe?.stepImages || {}) } : {};
+        for (const [idx, file] of Object.entries(stepImageFiles)) {
+            if (file instanceof File) {
+                stepImageUrls[idx] = await uploadImage(file, null, true);
+            }
+        }
+        if (mainImageUrl) recipe.mainImage = mainImageUrl;
+        if (Object.keys(stepImageUrls).length > 0) recipe.stepImages = stepImageUrls;
+
+        if (wasEditMode && wasEditDocId) {
             // UPDATE existing
-            await updateDoc(doc(db, 'recipes', editDocId), recipe);
-            docId = editDocId;
-            const idx = RECIPES.findIndex(r => r._docId === editDocId);
-            if (idx !== -1) RECIPES[idx] = { ...RECIPES[idx], ...recipe, _docId: editDocId };
+            await updateDoc(doc(db, 'recipes', wasEditDocId), recipe);
+            docId = wasEditDocId;
+            const idx = RECIPES.findIndex(r => r._docId === wasEditDocId);
+            if (idx !== -1) RECIPES[idx] = { ...RECIPES[idx], ...recipe, _docId: wasEditDocId };
         } else {
             // CREATE new
             recipe.isImported = true;
@@ -2192,46 +2212,26 @@ async function handleImportSave() {
             RECIPES.push(recipe);
         }
 
-        // Upload main image
-        if (mainImageFile) {
-            const mainUrl = await uploadImage(mainImageFile, `recipes/${docId}/main.jpg`);
-            await updateDoc(doc(db, 'recipes', docId), { mainImage: mainUrl });
-            const local = RECIPES.find(r => r._docId === docId);
-            if (local) local.mainImage = mainUrl;
-        }
-
-        // Upload step images
-        const existingStepImages = editMode ? { ...(activeRecipe?.stepImages || {}) } : {};
-        for (const [idx, file] of Object.entries(stepImageFiles)) {
-            if (file instanceof File) {
-                const url = await uploadImage(file, `recipes/${docId}/step_${idx}.jpg`);
-                existingStepImages[idx] = url;
-            }
-        }
-        if (Object.keys(existingStepImages).length > 0) {
-            await updateDoc(doc(db, 'recipes', docId), { stepImages: existingStepImages });
-            const local = RECIPES.find(r => r._docId === docId);
-            if (local) local.stepImages = existingStepImages;
-        }
-
         localStorage.removeItem(CACHE_KEY);
+        savedOk = true;
     } catch (err) {
         console.error('Failed to save recipe:', err);
-        showToast('❌ שגיאה בשמירה');
+        showToast('❌ שגיאה בשמירה — נסו שוב');
     }
 
     $('importSaveBtn').disabled = false;
-    $('importSaveBtn').textContent = editMode ? '💾 עדכון מתכון' : '💾 שמירה';
+    $('importSaveBtn').textContent = wasEditMode ? '💾 עדכון מתכון' : '💾 שמירה';
 
-    const savedRecipe = RECIPES.find(r => r.name === name);
-    editMode = false;
-    editDocId = null;
-    mainImageFile = null;
-    stepImageFiles = {};
-
-    closeImportModal();
-    filterAndRender();
-    if (savedRecipe) openModal(savedRecipe);
+    if (savedOk) {
+        const savedRecipe = RECIPES.find(r => r.name === name);
+        editMode = false;
+        editDocId = null;
+        mainImageFile = null;
+        stepImageFiles = {};
+        closeImportModal();
+        filterAndRender();
+        if (savedRecipe) openModal(savedRecipe);
+    }
 }
 
 // ============================================================
