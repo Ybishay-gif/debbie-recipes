@@ -1,0 +1,12 @@
+# Local Netlify folder
+.netlify
+
+# Claude Code
+.claude
+
+# Compressed images
+*.b64
+
+# Misc
+node_modules
+/tmp
